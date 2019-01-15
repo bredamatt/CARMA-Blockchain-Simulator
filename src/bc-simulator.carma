@@ -1,0 +1,788 @@
+// DEFINE CONSTANTS
+
+const nodenumber = 4;
+const nodenumber2 = 8;
+const P2PK = 250;
+const P2SH = 750;
+
+const NODE_RATE = 1.0;
+const NODE_RATE2 = 0.5;
+const PRODUCER_RATE = 1.0;
+const PRODUCER_RATE2 = 0.05;
+
+
+// DEFINE THE NETWORK TOPOLOGY OF THE SYSTEM 
+
+space Decentralised(int nodenumber) {
+	universe <int zone >
+
+	nodes {
+		[-10]; // TRX
+		[-20]; // MP
+		[-50]; // BLOCK
+
+		for i from 0 to (nodenumber) {
+			[i];
+		}
+
+		for i from 4 to (nodenumber2){
+			[i];
+		}
+
+		for j from 0 to nodenumber{
+			[-j];
+		}
+		[-4];
+	}
+
+	connections {
+
+		// cluster 1
+		for i from 0 to (nodenumber-1) {
+
+			[i] <-> [(i+1) % nodenumber]{traversal_rate = NODE_RATE};
+		}
+		[2] <-> [0]{traversal_rate = NODE_RATE};
+		[1] <-> [3]{traversal_rate = NODE_RATE};
+
+		// cluster 2
+		[4] <-> [5]{traversal_rate = NODE_RATE2};
+		[4] <-> [6]{traversal_rate = NODE_RATE2};
+		[4] <-> [7]{traversal_rate = NODE_RATE2};
+		[5] <-> [6]{traversal_rate = NODE_RATE2};
+		[5] <-> [7]{traversal_rate = NODE_RATE2};
+		[6] <-> [7]{traversal_rate = NODE_RATE2};
+
+		for i from 1 to nodenumber{
+			[-i] -> [0]{traversal_rate = PRODUCER_RATE};
+			[-i] -> [1]{traversal_rate = PRODUCER_RATE};
+			[-i] -> [2]{traversal_rate = PRODUCER_RATE};
+			[-i] -> [3]{traversal_rate = PRODUCER_RATE};
+			[-i] -> [4]{traversal_rate = PRODUCER_RATE2};
+			[-i] -> [5]{traversal_rate = PRODUCER_RATE2};
+			[-i] -> [6]{traversal_rate = PRODUCER_RATE2};
+			[-i] -> [7]{traversal_rate = PRODUCER_RATE2};
+		}
+	}
+
+	areas{
+		cluster1{
+			[0];
+			[1];
+			[2];
+			[3];
+		}
+		cluster2{
+			[4];
+			[5];
+			[6];
+			[7];
+		}
+	}
+}
+
+
+
+// ***** ASSOCIATED FUNCTIONS ***** \\
+// Function that defines "next" location based on current outgoing edges
+
+fun location nextNode(location current){
+	return current.outgoing().map(@.target).select(1.0);
+}
+
+fun location BlockReceiver(location current){
+	return current.outgoing().map(@.target).select(1.0);
+}
+
+// Function that defines the traversal rate to the "next" node, use in evolution rule
+fun real traversalRate(location current, location next){
+	set <real> rates = current.outgoing(next).map(@.traversal_rate);
+
+	if (size(rates) ==0){
+		return 0.0;
+	}
+	else {
+		return rates.select(1.0);
+	}
+}
+
+
+const adjusted = 0;
+fun int clearMP(int poolSize, int block_size){
+	if (poolSize < block_size){
+	int adjusted =	block_size/(2);
+	}
+	return adjusted;
+}
+
+
+// CONSANT ARRIVALS \\
+const t_start = 00.00;
+const t_end = 100.00;
+component ConstRoutePK(){
+
+	store{
+		P2PK = P2PK;
+		t_start = t_start;
+		t_end = t_end;
+	}
+
+	behaviour{
+		C_arr = [(t_start <= now) && (now <= t_end)] arrive_CK<loc, P2PK>.C_arr;
+	}
+
+	init{
+		C_arr
+	}
+}
+component ConstRouteSH(){
+	store{
+		P2SH = P2SH;
+		t_start = t_start;
+		t_end = t_end;
+	}
+	behaviour{
+		C_arr = [(t_start <= now) && (now <= t_end)] arrive_CH<loc, P2SH>.C_arr;
+	}
+	init{
+		C_arr
+	}
+}
+
+
+// BURSTY ARRIVALS \\
+const t_bstart = 5.0;
+component BurstRoute2K(){
+
+	store{
+		t_bstart = t_bstart;
+		duration = 0.0;
+		threshold = 1;
+	}
+	behaviour{
+
+		Time = [now < t_bstart] timer*<>.Time
+			 + [now >= t_bstart] bell*<>.B;
+
+		B = [duration < threshold] arrive_bk<loc, P2PK>{duration = duration +1;}.B
+	      + [duration >= threshold] empty*<>.nil;
+	}
+	init{
+		Time
+	}
+}
+
+component BurstRoute2H(){
+
+	store{
+		t_bstart = t_bstart;
+		duration = 0;
+		threshold = 1;
+	}
+	behaviour{
+
+		Time = [now < t_bstart] timer*<>.Time
+			 + [now >= t_bstart] bell*<>.B;
+
+		B = [duration < threshold] arrive_Bh<loc, P2PK>{duration = duration +1;}.B
+	      + [duration >= threshold] empty*<>.nil;
+	}
+	init{
+		Time
+	}
+}
+
+
+// TRX \\
+component TRX(){
+	store{
+		location next = none;
+		queuepos = 0;
+		nodeCount = 0; // increment per move
+		TRXbytes = 0;
+		time = 0.0;
+		toMP = false;
+	}
+	behaviour{
+
+		Arrives = arrive_CK(x,y){my.loc = x; TRXbytes = y;}.Save
+				+ arrive_CH(x,y){my.loc = x; TRXbytes = y;}.Save
+				+ arrive_bk(x,y){my.loc = x; TRXbytes = y;}.Save
+				+ arrive_Bh(x,y){my.loc = x; TRXbytes = y;}.Save;
+
+		Save =  storeTRX[my.loc == loc]<TRXbytes>{}.Q;
+
+		Q = assignQorder*[loc == my.loc](x){queuepos = x;}.Validate;
+
+		Validate = [queuepos > 1] validateTRX* [loc == my.loc] (y,x) {queuepos = queuepos -1;}.Validate
+				 + [queuepos == 1] validateTRX* [loc == my.loc] (y,x) {queuepos = queuepos -1; next = nextNode(x);}.StoreMP;
+
+		StoreMP = [toMP == false] ready* <TRXbytes> {toMP = true;}.Traverse
+				+ [toMP == true] simplyMove*<>{}.Traverse;
+
+		Traverse = [(nodeCount < (nodenumber -1)) && (next != my.loc)] move* <TRXbytes> {my.loc = next; next = none; nodeCount = nodeCount + 1;}.Save
+				 + [(nodeCount == (nodenumber -1))] killTRX <> {}.kill;
+	}
+
+	init{
+		Arrives
+	}
+}
+
+
+// ***** Node IS NECESSARY FOR BOTH TRANSACTION AND BLOCKCHAIN PART ***** \\
+
+// Node \\
+component Node(){
+
+	store{
+		myTRX = 0;
+		cache = 0;
+		P2PK = 250;
+		P2SH = 750;
+		MP = true;
+
+		blocks_saved = 0;
+		block_queue = 0;
+		block_cache = 0;
+
+		getTime = 0.0;
+		valid = false;
+		total_mem = block_cache + cache;
+	}
+
+	behaviour{
+
+		inTRX = storeTRX[my.loc == loc](bytes) {myTRX = myTRX + 1; cache = cache + bytes;}.qTRX; // store transaction and update local buffer based on TRX type
+
+		qTRX = assignQorder*[loc == my.loc] <myTRX>.inTRX; // assign a queue position to the transaction based on the number of transactions
+
+		vTRX = [myTRX >= 1 && cache >= P2PK] validateTRX* [loc == my.loc] <P2PK, my.loc> {myTRX = myTRX - 1; cache = cache - P2PK;}.vTRX
+		     + [myTRX >= 1 && cache >= P2SH] validateTRX* [loc == my.loc] <P2SH, my.loc> {myTRX = myTRX - 1; cache = cache - P2SH;}.vTRX
+		     + [myTRX == 0 && cache != 0] flush*<>{cache=0; myTRX = 0;}.vTRX;
+
+		sendMP = ready* (x) {}.push
+			   + simplyMove* () {}.push;
+
+		push = move* (x) {cache = cache + x; myTRX = myTRX + 1;}.sendMP;
+
+
+
+
+
+		ArriveBlock = arriveBlock*(x,y){}.inBlock;
+
+		inBlock = storeBlock <my.loc> {block_cache = block_cache + block_size; blocks_saved = blocks_saved + 1; block_queue = block_queue + 1;}.qBlock;
+				//+ storeBlock12 <my.loc> {block_cache = block_cache + block_size; blocks_saved = blocks_saved +1; block_queue = block_queue +1;}.qBlock;
+
+		qBlock = assignToQ*[loc == my.loc]<block_queue>{}.ArriveBlock;
+
+		vBlock = [block_queue > 0] validateBlock [my.loc == loc] <> {block_cache = block_cache - block_size; block_queue = block_queue -1;}.vBlock;
+		}
+
+	init{
+		inTRX | vTRX | sendMP | ArriveBlock | vBlock
+	}
+}
+
+measure BlockQueueAtNode (int i) = avg{my.block_queue | my.loc == [i]};
+
+
+component BlockRouter(){
+	store{
+		Router_blocks = 0;
+		location blockReceiver = none;
+		data = 0;
+	}
+	behaviour{
+		Ready3 = prepare[loc == my.loc] (x,y) {Router_blocks = Router_blocks + 1; data = y;}.Send3; // takes prepared blocks from BlockProducer
+		Send3 = [Router_blocks  == 1] arriveBlock* <Router_blocks, data> {data=0; Router_blocks = Router_blocks-1;}.Ready3;
+
+		Ready12 = prepare[loc == my.loc] (x,y) {Router_blocks=Router_blocks+1;data=y; blockReceiver=nextNode(my.loc);}.Send12;
+		Send12 = [Router_blocks == 1] arriveBlock <blockReceiver, data> {Router_blocks = Router_blocks - 1; data = 0;}.Ready12; // assigns location to block
+	}
+	init{
+		Ready3
+	}
+}
+
+component BlockProducer(){
+	store{
+		producedBlocks = 0;
+		memory = 0;
+		counter = 1;
+	}
+	behaviour{
+		Produce = produce (x) {producedBlocks = producedBlocks + 1; memory = memory + x;}.Produce;
+		UseRouter = [producedBlocks>=(1*counter)] prepare [my.loc ==loc] <producedBlocks, memory> {memory = memory - block_size; counter = counter +1;}.UseRouter;
+	}
+	init{
+		Produce | UseRouter
+	}
+}
+
+
+component Block(){
+
+	store{
+		data_value = 0;
+		queuePosition = 0;
+		location next = none;
+		visitCount = 0;
+		appended = false;
+		times_appended = 0;
+		dataSize = 0;
+	}
+
+	behaviour{
+		//ArriveBlock = arriveBlock*(x,y){dataSize = y;}.SaveBlock;
+					//+ arriveBlock(x,y) {my.loc = x; dataSize = y;}.SaveBlock;
+
+		SaveBlock = storeBlock(x){my.loc = x;}.QueueBlock;
+
+		QueueBlock = assignToQ* [loc == my.loc] (x){queuePosition = x;}.Validate;
+
+		Validate = [queuePosition == 1] validateBlock [loc == my.loc] () {next = nextNode(my.loc); queuePosition = queuePosition -1;}.Consensus
+		         + [queuePosition > 1] validateBlock [loc == my.loc] () {queuePosition = queuePosition - 1;}.Validate;
+
+	// Mechanism 1
+	//	Consensus =	[visitCount < 3] moveB*<>{my.loc = next; next = nextNode(my.loc); visitCount = visitCount + 1;}.Consensus
+	//			  + [visitCount == 3 && times_appended <1] append * <data_value> {times_appended = times_appended + 1;}.Consensus
+	//			  + [times_appended == 1] killBlock<>.kill;
+
+	// Mechanism 2
+	//				[visitCount < (nodenumber-1)] moveB*<>{my.loc = next; next = nextNode(my.loc); visitCount = visitCount + 1;}.Consensus
+	//			  + [visitCount == (nodenumber-1) && times_appended < nodenumber]append*[my.loc == loc] <data_value> {next = nextNode(my.loc); my.loc = next; times_appended = times_appended + 1;}.Consensus
+	//			  + [times_appended == nodenumber] killBlock<>.kill;
+
+	// Mechanism 3
+		Consensus = append* [my.loc == loc] <data_value> {}.kill;
+
+	}
+	init{
+		SaveBlock
+	}
+}
+
+
+component Blockchain(){
+
+	store{
+		chainLength = 0;
+		chainSize = 0;
+		int counter = 1;
+		real blockTime = 15.0;
+	}
+
+	behaviour{
+
+		//Append1 = append*(block_data){chainLength = chainLength + 1; chainSize = chainSize + block_data;}.Append1;
+		//Append23 =  append*[my.loc == loc](block_data) {chainLength = chainLength + 1; chainSize = chainSize + block_data; counter = counter + 1;}.Append23;
+
+		Append = append* [loc == my.loc] (block_data) {chainLength = chainLength + 1; chainSize = chainSize + block_data;}.Append;
+	}
+	init{
+		Append
+	}
+}
+
+
+// MEMORY POOL - A BUFFER TO STORE VALID TRANSACTIONS WAITING TO BE MINED SUCH THAT BlockProducerS ONLY BUILD BLOCKS FROM VALID TRANSACTIONS
+
+const block_size = 15000;
+
+component MemoryPool(){
+
+	store{
+		int poolSize = 0;
+		int StoredTRX = 0;
+		int block_size = block_size;
+		int counter = 1;
+		real blockTime = 10.0;
+		real upperTime = 2*blockTime;
+		int blocksProduced = 0;
+	}
+
+	behaviour{
+		PutTRX = ready* (bytes) {poolSize = poolSize + bytes; StoredTRX = StoredTRX+1;}.PutTRX;
+
+		FlushBlock = [((blockTime*counter) <= now) && ((upperTime) >= now) && (poolSize >= block_size)] produce <block_size>
+				  	{counter = counter + 1;  poolSize = poolSize - block_size;  blocksProduced = blocksProduced + 1; upperTime = upperTime + blockTime;}.FlushBlock;
+			}
+	init{
+		PutTRX | FlushBlock
+	}
+}
+
+
+// THE FOLLOWING IS THE SYSTEM (AND ITS COMPONENTS) TO BE SIMULATED \\
+
+system BlockchainSystemClusters{
+	space Decentralised(nodenumber)
+
+	collective{
+
+		// Cluster 1
+		new Node()@[0];
+		new Node()@[1];
+		new Node()@[2];
+		new Node()@[3];
+
+		new Blockchain()@[0];
+		new Blockchain()@[1];
+		new Blockchain()@[2];
+		new Blockchain()@[3];
+
+		new ConstRoutePK()@[0];
+		new ConstRoutePK()@[1];
+		new ConstRoutePK()@[2];
+		new ConstRoutePK()@[3];
+
+		new ConstRouteSH()@[0];
+ 		new ConstRouteSH()@[1];
+		new ConstRouteSH()@[2];
+		new ConstRouteSH()@[3];
+
+//	  	new BurstRoute2K()@[0];
+//	  	new BurstRoute2K()@[1];
+//	  	new BurstRoute2K()@[2];
+//		new BurstRoute2K()@[3];
+
+		// Cluster 2
+		new Node()@[4];
+		new Node()@[5];
+		new Node()@[6];
+		new Node()@[7];
+
+		new Blockchain()@[4];
+		new Blockchain()@[5];
+		new Blockchain()@[6];
+		new Blockchain()@[7];
+
+		new ConstRoutePK()@[4];
+		new ConstRoutePK()@[5];
+		new ConstRoutePK()@[6];
+		new ConstRoutePK()@[7];
+
+		new ConstRouteSH()@[4];
+		new ConstRouteSH()@[5];
+		new ConstRouteSH()@[6];
+		new ConstRouteSH()@[7];
+
+
+//		new BurstRoute2K()@[4];
+//	  	new BurstRoute2K()@[5];
+//	  	new BurstRoute2K()@[6];
+//		new BurstRoute2K()@[7];
+
+		// BlockProducers
+		new BlockProducer()@[-1];
+		new BlockProducer()@[-2];
+		new BlockProducer()@[-3];
+		new BlockProducer()@[-4];
+
+		// BlockRouters
+		new BlockRouter()@[-1];
+		new BlockRouter()@[-2];
+		new BlockRouter()@[-3];
+		new BlockRouter()@[-4];
+
+		new MemoryPool()@[-20];
+
+		// 100 TRX
+		new TRX()@[-10];
+		new TRX()@[-10];
+		new TRX()@[-10];
+		new TRX()@[-10];
+		new TRX()@[-10];
+		new TRX()@[-10];
+		new TRX()@[-10];
+		new TRX()@[-10];
+		new TRX()@[-10];
+		new TRX()@[-10];
+		// 10
+				new TRX()@[-10];
+		new TRX()@[-10];
+		new TRX()@[-10];
+		new TRX()@[-10];
+		new TRX()@[-10];
+		new TRX()@[-10];
+		new TRX()@[-10];
+		new TRX()@[-10];
+		new TRX()@[-10];
+		new TRX()@[-10];
+		// 10
+			new TRX()@[-10];
+		new TRX()@[-10];
+		new TRX()@[-10];
+		new TRX()@[-10];
+		new TRX()@[-10];
+		new TRX()@[-10];
+		new TRX()@[-10];
+		new TRX()@[-10];
+		new TRX()@[-10];
+		new TRX()@[-10];
+		// 10
+				new TRX()@[-10];
+		new TRX()@[-10];
+		new TRX()@[-10];
+		new TRX()@[-10];
+		new TRX()@[-10];
+		new TRX()@[-10];
+		new TRX()@[-10];
+		new TRX()@[-10];
+		new TRX()@[-10];
+		new TRX()@[-10];
+		// 10
+			new TRX()@[-10];
+		new TRX()@[-10];
+		new TRX()@[-10];
+		new TRX()@[-10];
+		new TRX()@[-10];
+		new TRX()@[-10];
+		new TRX()@[-10];
+		new TRX()@[-10];
+		new TRX()@[-10];
+		new TRX()@[-10];
+		// 10
+				new TRX()@[-10];
+		new TRX()@[-10];
+		new TRX()@[-10];
+		new TRX()@[-10];
+		new TRX()@[-10];
+		new TRX()@[-10];
+		new TRX()@[-10];
+		new TRX()@[-10];
+		new TRX()@[-10];
+		new TRX()@[-10];
+		// 10
+			new TRX()@[-10];
+		new TRX()@[-10];
+		new TRX()@[-10];
+		new TRX()@[-10];
+		new TRX()@[-10];
+		new TRX()@[-10];
+		new TRX()@[-10];
+		new TRX()@[-10];
+		new TRX()@[-10];
+		new TRX()@[-10];
+		// 10
+				new TRX()@[-10];
+		new TRX()@[-10];
+		new TRX()@[-10];
+		new TRX()@[-10];
+		new TRX()@[-10];
+		new TRX()@[-10];
+		new TRX()@[-10];
+		new TRX()@[-10];
+		new TRX()@[-10];
+		new TRX()@[-10];
+		// 10
+					new TRX()@[-10];
+		new TRX()@[-10];
+		new TRX()@[-10];
+		new TRX()@[-10];
+		new TRX()@[-10];
+		new TRX()@[-10];
+		new TRX()@[-10];
+		new TRX()@[-10];
+		new TRX()@[-10];
+		new TRX()@[-10];
+		// 10
+				new TRX()@[-10];
+		new TRX()@[-10];
+		new TRX()@[-10];
+		new TRX()@[-10];
+		new TRX()@[-10];
+		new TRX()@[-10];
+		new TRX()@[-10];
+		new TRX()@[-10];
+		new TRX()@[-10];
+		new TRX()@[-10];
+
+	}
+
+	environment{
+
+		store{
+			TraversedTRX = 0;
+			ArrivedBlocks = 0;
+			TraversedBlocks = 0;
+			AppendedBlocks = 0;
+			SimplyMovedTRX = 0;
+			SentToMP = 0 ;
+			producedB = 0;
+			arrivedTRX = 0;
+			arrivedBursty = 0;
+
+		}
+
+
+		rate{
+			storeTRX*{
+				return 1.0;
+			}
+
+			 assignQorder*{
+			 	return 1.0;
+			 }
+
+			validateTRX{
+				return 1.0;
+				}
+
+			ready*{
+				return 1.0;
+			}
+
+			simplyMove*{
+				return 1.0;
+			}
+
+			move*{
+				return traversalRate(sender.loc, [sender.next]);
+			}
+
+		//	moveB*{
+		//		return traversalRate(sender.loc, [sender.next]);
+		//	}
+
+
+			produce{
+				return 1.0;
+			}
+
+			validateBlock{
+				return 1.0;
+			}
+
+			arrive_bk*{
+				return 1.0;
+			}
+
+			arrive_Bh{
+				return 1.0;
+			}
+
+			arrive_CK{
+				return 10.0;
+			}
+
+			arrive_CH{
+				return 10.0;
+			}
+
+			arriveBlock*{
+				return 1.0;
+			}
+
+			prepare*{
+				return 1.0;
+			}
+
+			append*{
+				return 100.0;
+			}
+		}
+
+		update{
+			move*{
+				TraversedTRX = TraversedTRX + 1;
+				//new TRX()@[-10];
+			}
+
+			arrive_bk*{
+				arrivedBursty = arrivedBursty +1;
+				arrivedTRX = arrivedTRX + 1;
+			}
+
+			arrive_Bh{
+				arrivedTRX = arrivedTRX + 1;
+			}
+
+			arrive_CH{
+				arrivedTRX = arrivedTRX + 1;
+			}
+
+			arrive_CK{
+				arrivedTRX = arrivedTRX + 1;
+			}
+
+			produce{
+				producedB = producedB+1;
+				new Block()@[-50];
+				new Block()@[-50];
+				new Block()@[-50];
+				new Block()@[-50];
+				new Block()@[-50];
+				new Block()@[-50];
+				new Block()@[-50];
+				new Block()@[-50];
+
+			}
+
+			append*{
+				AppendedBlocks = AppendedBlocks + 1;
+			}
+
+	//		moveB*{
+	//			TraversedBlocks = TraversedBlocks + 1;
+	//		}
+
+			arriveBlock*{
+				ArrivedBlocks = ArrivedBlocks + 1;
+			}
+
+			simplyMove*{
+				SimplyMovedTRX = SimplyMovedTRX + 1;
+			}
+
+			ready*{
+				SentToMP = SentToMP + 1;
+			}
+		}
+	}
+}
+
+measure inConsensus = #{Block[Consensus] | true};
+
+// TRX and Node
+measure StoredTRXNode (int i) = avg{my.myTRX | my.loc == [i]};
+measure NodeCacheSize (int i) = avg{my.cache | my.loc ==[i]};
+measure TRXValidatedAt (int i) = #{TRX[Validate] | my.loc == [i]};
+measure TRXValidated = #{TRX[Validate] | true};
+measure NodeMemReq (int i) = avg{my.total_mem | my.loc == [i]};
+measure arrivedTRX = max{global.arrivedTRX | true};
+measure arrivedBursty = avg{global.arrivedBursty | true};
+
+// TRX movement
+measure TraversedTRX = avg{global.TraversedTRX};
+
+// Memory Pool and BlockProducers
+measure SentToMP = avg{global.SentToMP};
+measure StoredInMemoryPool = avg{my.StoredTRX | true};
+measure MemPoolSize = max{my.poolSize | true};
+measure blocksProduced = avg{my.blocksProduced | true};
+measure producedBlocks (int i) = avg{my.producedBlocks | my.loc == [i]};
+measure producedB = max{global.producedB | true};
+
+// Blocks and BlockRouter
+measure BlocksStored (int i) = avg{my.blocks_saved | my.loc == [i]};
+measure BlocksAtRouter (int i) = avg{my.Router_blocks | my.loc == [i]};
+
+//measure WhichNodeCheckingBlock (int i) = #{Block[Validate] | my.loc == [i]};
+measure TraversedBlocks = max{global.TraversedBlocks};
+measure ArrivedBlocks = avg{global.ArrivedBlocks};
+
+// Blockchain
+measure ChainLength (int i) = avg{my.chainLength | my.loc == [i]};
+measure AppendedBlocks = avg{global.AppendedBlocks | true};
+measure InterArrival1 (int i) = #{Blockchain[Append] | my.chainLength > 0 && my.loc == [i]};
+measure InterArrival2 (int i) = #{Blockchain[Append] | my.chainLength > 1 && my.loc == [i]};
+measure InterArrival3 (int i) = #{Blockchain[Append] | my.chainLength > 2 && my.loc == [i]};
+measure InterArrival4 (int i) = #{Blockchain[Append] | my.chainLength == 4 && my.loc == [i]};
+measure InterArrival5 (int i) = #{Blockchain[Append] | my.chainLength == 5 && my.loc == [i]};
+measure InterArrival6 (int i) = #{Blockchain[Append] | my.chainLength == 6 && my.loc == [i]};
+measure InterArrival7 (int i) = #{Blockchain[Append] | my.chainLength == 7 && my.loc == [i]};
+measure InterArrival8 (int i) = #{Blockchain[Append] | my.chainLength == 8 && my.loc == [i]};
+measure InterArrival9 (int i) = #{Blockchain[Append] | my.chainLength == 9 && my.loc == [i]};
